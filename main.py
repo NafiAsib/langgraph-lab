@@ -23,11 +23,15 @@ class MessageClassifier(BaseModel):
 class State(TypedDict):
     messages: Annotated[list, add_messages]
     message_type: str | None
+    node_path: list[str]
 
 
 def classify_message(state: State):
     last_message = state["messages"][-1]
     classifier_llm = llm.with_structured_output(MessageClassifier)
+
+    node_path = state.get("node_path", [])
+    node_path.append("classifier")
 
     result = classifier_llm.invoke([
         {
@@ -39,19 +43,26 @@ def classify_message(state: State):
         },
         {"role": "user", "content": last_message.content}
     ])
-    return {"message_type": result.message_type}
+    return {"message_type": result.message_type, "node_path": node_path}
 
 
 def router(state: State):
     message_type = state.get("message_type", "logical")
+    
+    node_path = state.get("node_path", [])
+    node_path.append("router")
+    
     if message_type == "emotional":
-        return {"next": "therapist"}
+        return {"next": "therapist", "node_path": node_path}
 
-    return {"next": "logical"}
+    return {"next": "logical", "node_path": node_path}
 
 
 def therapist_agent(state: State):
     last_message = state["messages"][-1]
+    
+    node_path = state.get("node_path", [])
+    node_path.append("therapist")
 
     messages = [
         {"role": "system",
@@ -66,11 +77,14 @@ def therapist_agent(state: State):
         }
     ]
     reply = llm.invoke(messages)
-    return {"messages": [{"role": "assistant", "content": reply.content}]}
+    return {"messages": [{"role": "assistant", "content": reply.content}], "node_path": node_path}
 
 
 def logical_agent(state: State):
     last_message = state["messages"][-1]
+    
+    node_path = state.get("node_path", [])
+    node_path.append("logical")
 
     messages = [
         {"role": "system",
@@ -85,7 +99,7 @@ def logical_agent(state: State):
         }
     ]
     reply = llm.invoke(messages)
-    return {"messages": [{"role": "assistant", "content": reply.content}]}
+    return {"messages": [{"role": "assistant", "content": reply.content}], "node_path": node_path}
 
 
 graph_builder = StateGraph(State)
@@ -111,7 +125,7 @@ graph = graph_builder.compile()
 
 
 def run_chatbot():
-    state = {"messages": [], "message_type": None}
+    state = {"messages": [], "message_type": None, "node_path": []}
 
     while True:
         user_input = input("Message: ")
@@ -119,15 +133,21 @@ def run_chatbot():
             print("Bye")
             break
 
+        # Reset the node path for each new message
+        state["node_path"] = []
+        
         state["messages"] = state.get("messages", []) + [
             {"role": "user", "content": user_input}
         ]
-
+        
+        # Run graph
         state = graph.invoke(state)
 
         if state.get("messages") and len(state["messages"]) > 0:
             last_message = state["messages"][-1]
-            print(f"Assistant: {last_message.content}")
+            responding_node = state["node_path"][-1] if state["node_path"] else "unknown"
+            print(f"Assistant ({responding_node}): {last_message.content}")
+            print(f"Path taken: {' -> '.join(state['node_path'])}")
 
 
 if __name__ == "__main__":
